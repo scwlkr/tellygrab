@@ -42,8 +42,9 @@ cat <<'MSG'
 tellygrab installed.
 
 Try:
-  telly video "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
-  telly audio "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+  tg video "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+  tg audio "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+  tg info "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
 
-If this is your first pipx install, open a new terminal before running telly.
+If this is your first pipx install, open a new terminal before running tg.
 MSG

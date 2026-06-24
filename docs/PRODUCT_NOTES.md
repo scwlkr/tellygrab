@@ -7,7 +7,7 @@ Most YouTube download helpers optimize for delivery files such as MP4 video and 
 ## Product bets
 
 - Stay tiny. Use `yt-dlp` for extraction and `ffmpeg` for conversion instead of reimplementing either job.
-- Make the happy path memorable: `telly video URL` and `telly audio URL`.
+- Make the happy path memorable: `tg video URL` and `tg audio URL`.
 - Prefer editing formats: ProRes 422 `.mov` and 48kHz PCM `.wav`.
 - Avoid playlist surprises with `--no-playlist`.
 - Make progress feel fun with an ASCII TV reveal, inspired by the reference TV image.

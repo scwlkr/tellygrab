@@ -6,8 +6,10 @@ Tiny terminal YouTube downloads for editors.
 
 `tellygrab` is a small wrapper around `yt-dlp` and `ffmpeg` that turns a YouTube URL into files that are comfortable in Premiere-style editing workflows:
 
-- `telly video URL` saves a ProRes `.mov` in `~/Downloads`
-- `telly audio URL` saves a 48kHz `.wav` in `~/Downloads`
+- `tg video URL` saves a ProRes `.mov` in `~/Downloads`
+- `tg audio URL` saves a 48kHz `.wav` in `~/Downloads`
+- `tg info URL` previews title, id, duration, and output filenames
+- `tg recent` lists recent `.mov` and `.wav` outputs
 - filenames use the YouTube title plus video ID
 - playlists are disabled by default
 - progress reveals a tiny ASCII TV as the job completes
@@ -44,35 +46,49 @@ python -m pip install .
 Download video as ProRes 422 `.mov`:
 
 ```sh
-telly video "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+tg video "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
 ```
 
 Download audio as 48kHz `.wav`:
 
 ```sh
-telly audio "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+tg audio "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+```
+
+Preview metadata and expected output names without downloading:
+
+```sh
+tg info "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+```
+
+List recent tellygrab outputs:
+
+```sh
+tg recent
 ```
 
 Check dependencies:
 
 ```sh
-telly doctor
+tg doctor
 ```
 
 Choose a different output folder:
 
 ```sh
-telly video "https://www.youtube.com/watch?v=dQw4w9WgXcQ" --output-dir ~/Desktop
+tg video "https://www.youtube.com/watch?v=dQw4w9WgXcQ" --output-dir ~/Desktop
 ```
 
 Choose a different ProRes profile:
 
 ```sh
-telly video "https://www.youtube.com/watch?v=dQw4w9WgXcQ" --profile lt
-telly video "https://www.youtube.com/watch?v=dQw4w9WgXcQ" --profile hq
+tg video "https://www.youtube.com/watch?v=dQw4w9WgXcQ" --profile lt
+tg video "https://www.youtube.com/watch?v=dQw4w9WgXcQ" --profile hq
 ```
 
 The default profile is `standard`, which maps to ProRes 422 and balances quality and file size for everyday editing.
+
+`telly` and `tellygrab` are kept as compatibility aliases, but `tg` is the primary command.
 
 ## Why MOV/WAV?
 

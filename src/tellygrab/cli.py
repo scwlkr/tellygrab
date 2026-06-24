@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import shutil
@@ -16,6 +17,7 @@ from tellygrab import __version__
 
 OUTPUT_TEMPLATE = "%(title).200B [%(id)s].%(ext)s"
 DOWNLOAD_RE = re.compile(r"download:\s*([0-9]+(?:\.[0-9]+)?)%")
+OUTPUT_RE = re.compile(r"^.+ \[[A-Za-z0-9_-]{6,}\]\.(mov|wav)$")
 
 TV_ART = (
     "          o                   o\n"
@@ -90,7 +92,7 @@ class RevealDisplay:
         filled = round(width * pct / 100.0)
         bar = f"{green}{'#' * filled}{dim}{'-' * (width - filled)}{reset}"
         lines = [
-            f"{bold}tellygrab{reset} {cyan}{self.mode}{reset} {pct:5.1f}%",
+            f"{bold}tg{reset} {cyan}{self.mode}{reset} {pct:5.1f}%",
             f"[{bar}]",
             f"{dim}stage{reset}  {stage}",
             f"{dim}save{reset}   {self.output_dir}",
@@ -118,16 +120,16 @@ def default_output_dir() -> Path:
     return Path.home() / "Downloads"
 
 
-def find_missing_tools() -> list[str]:
+def find_missing_tools(tools: Iterable[str] = ("yt-dlp", "ffmpeg", "ffprobe")) -> list[str]:
     missing: list[str] = []
-    for tool in ("yt-dlp", "ffmpeg", "ffprobe"):
+    for tool in tools:
         if shutil.which(tool) is None:
             missing.append(tool)
     return missing
 
 
-def ensure_tools() -> None:
-    missing = find_missing_tools()
+def ensure_tools(tools: Iterable[str] = ("yt-dlp", "ffmpeg", "ffprobe")) -> None:
+    missing = find_missing_tools(tools)
     if not missing:
         return
 
@@ -143,7 +145,7 @@ def ensure_tools() -> None:
     raise TellyError(
         "Missing required tools: "
         + ", ".join(missing)
-        + "\nInstall yt-dlp and ffmpeg, then run telly again."
+        + "\nInstall yt-dlp and ffmpeg, then run tg again."
     )
 
 
@@ -154,6 +156,34 @@ def brew_packages_for(tools: Iterable[str]) -> list[str]:
         if package not in packages:
             packages.append(package)
     return packages
+
+
+def clean_filename(value: str) -> str:
+    cleaned = re.sub(r"[\x00-\x1f/:]+", "-", value).strip()
+    cleaned = re.sub(r"\s+", " ", cleaned)
+    return cleaned[:200] or "youtube"
+
+
+def output_stem(title: str, video_id: str) -> str:
+    return f"{clean_filename(title)} [{video_id}]"
+
+
+def format_duration(seconds: int | float | None) -> str:
+    if seconds is None:
+        return "unknown"
+
+    total = int(seconds)
+    hours, remainder = divmod(total, 3600)
+    minutes, secs = divmod(remainder, 60)
+    if hours:
+        return f"{hours}:{minutes:02d}:{secs:02d}"
+    return f"{minutes}:{secs:02d}"
+
+
+def format_upload_date(value: str | None) -> str:
+    if not value or len(value) != 8:
+        return "unknown"
+    return f"{value[0:4]}-{value[4:6]}-{value[6:8]}"
 
 
 def parse_download_percent(line: str) -> float | None:
@@ -407,18 +437,95 @@ def run_job(
         return output_path
 
 
+def fetch_info(url: str) -> dict:
+    ensure_tools(("yt-dlp",))
+    result = subprocess.run(
+        [
+            "yt-dlp",
+            "--no-playlist",
+            "--dump-single-json",
+            "--no-warnings",
+            url,
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    if result.returncode != 0:
+        recent = result.stderr.strip() or result.stdout.strip() or "No output captured."
+        raise TellyError(f"Info lookup failed.\n\nRecent output:\n{recent}")
+
+    try:
+        data = json.loads(result.stdout)
+    except json.JSONDecodeError as error:
+        raise TellyError(f"Info lookup returned invalid JSON: {error}") from error
+
+    if not isinstance(data, dict):
+        raise TellyError("Info lookup returned unexpected data.")
+    return data
+
+
+def run_info(url: str, output_dir: Path) -> int:
+    info = fetch_info(url)
+    title = str(info.get("title") or "youtube")
+    video_id = str(info.get("id") or "unknown")
+    stem = output_stem(title, video_id)
+    channel = info.get("channel") or info.get("uploader") or "unknown"
+    duration = format_duration(info.get("duration"))
+    upload_date = format_upload_date(info.get("upload_date"))
+    webpage_url = info.get("webpage_url") or url
+
+    print(title)
+    print(f"id:       {video_id}")
+    print(f"channel:  {channel}")
+    print(f"duration: {duration}")
+    print(f"uploaded: {upload_date}")
+    print(f"url:      {webpage_url}")
+    print(f"video:    {output_dir / (stem + '.mov')}")
+    print(f"audio:    {output_dir / (stem + '.wav')}")
+    return 0
+
+
+def recent_files(output_dir: Path, limit: int) -> list[Path]:
+    if not output_dir.exists():
+        return []
+
+    files = [
+        path
+        for path in output_dir.iterdir()
+        if path.is_file() and OUTPUT_RE.match(path.name)
+    ]
+    files.sort(key=lambda path: path.stat().st_mtime, reverse=True)
+    return files[:limit]
+
+
+def run_recent(output_dir: Path, limit: int) -> int:
+    files = recent_files(output_dir, limit)
+    if not files:
+        print(f"No tellygrab downloads found in {output_dir}")
+        return 0
+
+    for path in files:
+        size_mb = path.stat().st_size / (1024 * 1024)
+        print(f"{size_mb:7.1f} MB  {path}")
+    return 0
+
+
 def examples() -> str:
     return (
         "\nExamples:\n"
-        '  telly video "https://www.youtube.com/watch?v=dQw4w9WgXcQ"\n'
-        '  telly audio "https://www.youtube.com/watch?v=dQw4w9WgXcQ"\n'
-        "  telly doctor\n"
+        '  tg video "https://www.youtube.com/watch?v=dQw4w9WgXcQ"\n'
+        '  tg audio "https://www.youtube.com/watch?v=dQw4w9WgXcQ"\n'
+        '  tg info "https://www.youtube.com/watch?v=dQw4w9WgXcQ"\n'
+        "  tg recent\n"
+        "  tg doctor\n"
     )
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="telly",
+        prog="tg",
         description="Tiny YouTube downloader for editor-ready terminal workflows.",
         epilog=examples(),
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -442,6 +549,14 @@ def build_parser() -> argparse.ArgumentParser:
     audio.add_argument("url", help="YouTube URL")
     audio.add_argument("-o", "--output-dir", type=Path, default=default_output_dir())
     audio.add_argument("--keep-temp", action="store_true", help="keep temporary source files")
+
+    info = subparsers.add_parser("info", help="preview title, id, and output filenames")
+    info.add_argument("url", help="YouTube URL")
+    info.add_argument("-o", "--output-dir", type=Path, default=default_output_dir())
+
+    recent = subparsers.add_parser("recent", help="list recent tellygrab files")
+    recent.add_argument("-o", "--output-dir", type=Path, default=default_output_dir())
+    recent.add_argument("-n", "--limit", type=int, default=10, help="number of files to show")
 
     doctor = subparsers.add_parser("doctor", help="check local dependencies")
     doctor.add_argument("--install-command", action="store_true", help="print the Homebrew install command")
@@ -481,6 +596,10 @@ def main(argv: Iterable[str] | None = None) -> int:
         if args.command == "audio":
             run_job("audio", args.url, args.output_dir.expanduser(), "standard", args.keep_temp)
             return 0
+        if args.command == "info":
+            return run_info(args.url, args.output_dir.expanduser())
+        if args.command == "recent":
+            return run_recent(args.output_dir.expanduser(), args.limit)
         if args.command == "doctor":
             return run_doctor(args.install_command)
 

@@ -1,4 +1,5 @@
 import unittest
+import os
 from pathlib import Path
 
 from tellygrab import __version__
@@ -34,6 +35,31 @@ class TellygrabTests(unittest.TestCase):
     def test_brew_packages_are_deduped(self):
         self.assertEqual(cli.brew_packages_for(["yt-dlp", "ffmpeg", "ffprobe"]), ["yt-dlp", "ffmpeg"])
 
+    def test_filename_helpers(self):
+        self.assertEqual(cli.clean_filename("a/b: c"), "a-b- c")
+        self.assertEqual(cli.output_stem("Title", "abc123"), "Title [abc123]")
+
+    def test_format_helpers(self):
+        self.assertEqual(cli.format_duration(90), "1:30")
+        self.assertEqual(cli.format_duration(3671), "1:01:11")
+        self.assertEqual(cli.format_upload_date("20260624"), "2026-06-24")
+
+    def test_recent_files_filters_and_sorts(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old = root / "Old [abcdef12345].wav"
+            new = root / "New [abcdef12345].mov"
+            skip = root / "plain.mov"
+            old.write_text("old")
+            new.write_text("new")
+            skip.write_text("skip")
+            os.utime(old, (1, 1))
+            os.utime(new, (2, 2))
+
+            self.assertEqual(cli.recent_files(root, 5), [new, old])
+
     def test_video_conversion_targets_prores_mov_style(self):
         command = cli.video_ffmpeg_command(Path("in.webm"), Path("out.mov"), "standard")
         self.assertIn("prores_ks", command)
@@ -49,6 +75,14 @@ class TellygrabTests(unittest.TestCase):
 
     def test_version_is_set(self):
         self.assertRegex(__version__, r"^\d+\.\d+\.\d+$")
+
+    def test_parser_uses_tg_examples(self):
+        parser = cli.build_parser()
+        self.assertEqual(parser.prog, "tg")
+        help_text = parser.format_help()
+        self.assertIn("tg video", help_text)
+        self.assertIn("info", help_text)
+        self.assertIn("recent", help_text)
 
 
 if __name__ == "__main__":
