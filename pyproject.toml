@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tellygrab"
+version = "0.1.0"
+description = "Tiny terminal YouTube downloader for editor-ready ProRes MOV and WAV files."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+authors = [
+  { name = "scwlkr" }
+]
+keywords = ["youtube", "yt-dlp", "ffmpeg", "prores", "wav", "cli", "video"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "Intended Audience :: End Users/Desktop",
+  "Operating System :: MacOS",
+  "Operating System :: POSIX",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Topic :: Multimedia :: Video",
+  "Topic :: Utilities",
+]
+
+[project.urls]
+Homepage = "https://github.com/scwlkr/tellygrab"
+Issues = "https://github.com/scwlkr/tellygrab/issues"
+Source = "https://github.com/scwlkr/tellygrab"
+
+[project.scripts]
+telly = "tellygrab.cli:main"
+tellygrab = "tellygrab.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

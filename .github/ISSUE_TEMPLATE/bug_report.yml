@@ -1,0 +1,31 @@
+name: Bug report
+description: Something is not working
+title: "Bug: "
+labels: ["bug"]
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: Describe the behavior and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: command
+    attributes:
+      label: Command
+      description: Paste the command you ran. Remove private URLs if needed.
+      render: sh
+    validations:
+      required: true
+  - type: textarea
+    id: output
+    attributes:
+      label: Output
+      description: Paste the relevant terminal output.
+      render: text
+  - type: input
+    id: system
+    attributes:
+      label: System
+      placeholder: "macOS 15, Python 3.12, ffmpeg 8"
