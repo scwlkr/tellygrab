@@ -12,7 +12,7 @@ Tiny terminal YouTube downloads for editors.
 - `tg recent` lists recent `.mov` and `.wav` outputs
 - filenames use the YouTube title plus video ID
 - playlists are disabled by default
-- progress reveals a tiny ASCII TV as the job completes
+- progress reveals a CRT-style ASCII TV with animated static as the job completes
 
 It is not trying to replace `yt-dlp`. It is a friendly two-lane workflow for people who want edit-ready files without remembering codec flags.
 
@@ -92,7 +92,7 @@ The default profile is `standard`, which maps to ProRes 422 and balances quality
 
 ## Why MOV/WAV?
 
-YouTube often serves efficient delivery codecs such as VP9 or AV1. Those are good for streaming, but they are not as comfortable for editing timelines. `tellygrab` downloads the best available source, then converts video to ProRes 422 in a QuickTime `.mov` with 48kHz PCM audio. Audio-only downloads become 48kHz PCM `.wav` files instead of MP3 so you avoid extra loss before editing.
+YouTube often serves efficient delivery codecs such as VP9 or AV1. Those are good for streaming, but they are not as comfortable for editing timelines. `tellygrab` downloads the best available source, then converts video to ProRes 422 in a QuickTime `.mov` with 48kHz PCM audio. On Macs with Apple's ProRes encoder available through FFmpeg, `tg video` uses that hardware path automatically. Audio-only downloads become 48kHz PCM `.wav` files instead of MP3 so you avoid extra loss before editing.
 
 ## Requirements
 

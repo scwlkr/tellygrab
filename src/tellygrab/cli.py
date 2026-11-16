@@ -3,12 +3,16 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import random
 import re
 import shutil
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 from collections import deque
+from functools import lru_cache
 from pathlib import Path
 from typing import Callable, Iterable
 
@@ -16,22 +20,16 @@ from tellygrab import __version__
 
 
 OUTPUT_TEMPLATE = "%(title).200B [%(id)s].%(ext)s"
-DOWNLOAD_RE = re.compile(r"download:\s*([0-9]+(?:\.[0-9]+)?)%")
+DOWNLOAD_RE = re.compile(r"(?:download:\s*)?([0-9]+(?:\.[0-9]+)?)%")
 OUTPUT_RE = re.compile(r"^.+ \[[A-Za-z0-9_-]{6,}\]\.(mov|wav)$")
 
-TV_ART = (
-    "          o                   o\n"
-    "           \\\\                 /\n"
-    "            \\\\               /\n"
-    "   .--------------------------------.\n"
-    "  / .--------------------------.    \\\\\n"
-    " |  |                          |  () |\n"
-    " |  |                          |  () |\n"
-    " |  |                          |     |\n"
-    " |  '--------------------------'     |\n"
-    "  \\\\________________________________/\n"
-    "       /_/                    \\\\_\\"
-)
+TV_SCREEN_WIDTH = 34
+TV_SCREEN_HEIGHT = 8
+TV_STATIC_GRAIN = "     ....::::----====++**##"
+TV_FRAME_INTERVAL_SECONDS = 0.05
+TV_PROGRESS_EASE = 0.22
+TV_MIN_PROGRESS_STEP = 0.18
+TV_SCANLINE_GRAIN = ".:"
 
 PRORES_PROFILES = {
     "proxy": 0,
@@ -45,22 +43,116 @@ class TellyError(RuntimeError):
     """User-facing command failure."""
 
 
-def reveal_art(percent: float, art: str = TV_ART) -> str:
-    pct = max(0.0, min(100.0, percent))
-    drawable = sum(1 for char in art if char not in (" ", "\n"))
-    visible = round(drawable * (pct / 100.0))
-    seen = 0
+def static_screen_row(width: int, row: int, frame: int) -> str:
+    rng = random.Random((frame + 1) * 65_537 + row * 997)
+    cells: list[str] = []
+
+    for column in range(width):
+        char = rng.choice(TV_STATIC_GRAIN)
+        if (row + frame) % 5 == 0 and column % 7 in {1, 2, 3}:
+            char = "-"
+        elif (column + frame + row * 2) % 17 == 0:
+            char = rng.choice(".:-=")
+        cells.append(char)
+
+    return "".join(cells)
+
+
+def render_static_screen(frame: int = 0) -> list[str]:
+    return [
+        static_screen_row(TV_SCREEN_WIDTH, row, frame)
+        for row in range(TV_SCREEN_HEIGHT)
+    ]
+
+
+def render_tv_art(frame: int = 0) -> str:
+    screen = render_static_screen(frame)
+    screen_border = "." + ("-" * (TV_SCREEN_WIDTH + 2)) + "."
+    screen_opening = "/" + (" " * (TV_SCREEN_WIDTH + 4)) + "\\"
+    screen_base = "\\" + ("_" * (TV_SCREEN_WIDTH + 4)) + "/"
+    control_rows = [
+        " .-.  ",
+        "(   ) ",
+        " `-'  ",
+        " .-.  ",
+        "(   ) ",
+        " `-'  ",
+        " |||  ",
+        "      ",
+    ]
+    lines = [
+        "             .-.                       .-.",
+        "              \\                       /",
+        "               \\         _           /",
+        "                \\_______/ \\_________/",
+        "        .--------------------------------------------.",
+        f"     .-'  {screen_border}  .----. '-.",
+        f"    /    {screen_opening} | VHF |   \\",
+    ]
+
+    for row, controls in zip(screen, control_rows):
+        lines.append(f"   |    | {row} | | {controls}|    |")
+
+    lines.extend(
+        [
+            f"    \\    {screen_base} |      |   /",
+            "     '.       ____________________________        '----' .'",
+            "       '-----'                            '------------'",
+            "              /__/                    \\__\\",
+        ]
+    )
+    width = max(len(line) for line in lines)
+    return "\n".join(line.ljust(width) for line in lines)
+
+
+TV_ART = render_tv_art()
+
+
+def scanline_reveal_line(line: str, fraction: float, frame: int) -> str:
+    if fraction <= 0.0:
+        return " " * len(line)
+    if fraction >= 1.0:
+        return line
+
+    shimmer = TV_SCANLINE_GRAIN[0 if fraction < 0.5 else 1]
     output: list[str] = []
 
-    for char in art:
-        if char in (" ", "\n"):
+    for column, char in enumerate(line):
+        if char == " ":
+            output.append(" ")
+        elif fraction < 0.25:
+            output.append(shimmer if (column + frame) % 3 == 0 else " ")
+        elif fraction < 0.5:
+            output.append(shimmer)
+        elif fraction < 0.75:
+            output.append(shimmer if (column + frame) % 4 == 0 else char)
+        else:
             output.append(char)
-            continue
-
-        seen += 1
-        output.append(char if seen <= visible else " ")
 
     return "".join(output)
+
+
+def reveal_art(percent: float, art: str | None = None, frame: int = 0) -> str:
+    pct = max(0.0, min(100.0, percent))
+    source = render_tv_art(frame) if art is None else art
+    lines = source.splitlines()
+    if not lines:
+        return ""
+
+    scan = len(lines) * (pct / 100.0)
+    full_rows = min(len(lines), int(scan))
+    partial = scan - full_rows
+    output: list[str] = []
+
+    for index, line in enumerate(lines):
+        if index < full_rows:
+            output.append(line)
+        elif index == full_rows and index < len(lines):
+            output.append(scanline_reveal_line(line, partial, frame))
+        else:
+            output.append(" " * len(line))
+
+    return "\n".join(output)
 
 
 class RevealDisplay:
@@ -68,9 +160,19 @@ class RevealDisplay:
         self.mode = mode
         self.output_dir = output_dir
         self.stream = stream or sys.stdout
-        self.interactive = self.stream.isatty() and not os.environ.get("NO_COLOR")
+        self.interactive = self.stream.isatty()
+        self.color = self.interactive and not os.environ.get("NO_COLOR")
         self.rendered_lines = 0
         self.last_bucket: tuple[str, int] | None = None
+        self.frame = 0
+        self.current_percent = 0.0
+        self.target_percent = 0.0
+        self.stage = ""
+        self.detail = ""
+        self.async_animation = self.stream in {sys.stdout, sys.stderr}
+        self._lock = threading.Lock()
+        self._stop_animation = threading.Event()
+        self._animation_thread: threading.Thread | None = None
 
     def update(self, percent: float, stage: str, detail: str = "") -> None:
         pct = max(0.0, min(100.0, percent))
@@ -83,11 +185,57 @@ class RevealDisplay:
                 print(f"{stage:>10} {pct:5.1f}% {detail}".rstrip(), file=self.stream)
             return
 
-        reset = "\033[0m"
-        bold = "\033[1m"
-        dim = "\033[2m"
-        green = "\033[32m"
-        cyan = "\033[36m"
+        with self._lock:
+            self.target_percent = max(self.target_percent, pct)
+            self.stage = stage
+            self.detail = detail
+
+        if self.async_animation:
+            self._start_animation()
+        else:
+            self.current_percent = pct
+            self._render_interactive(pct, stage, detail)
+
+    def _start_animation(self) -> None:
+        if self._animation_thread and self._animation_thread.is_alive():
+            return
+
+        self._stop_animation.clear()
+        self._animation_thread = threading.Thread(
+            target=self._animation_loop,
+            name="tellygrab-display",
+            daemon=True,
+        )
+        self._animation_thread.start()
+
+    def _animation_loop(self) -> None:
+        while not self._stop_animation.is_set():
+            with self._lock:
+                target = self.target_percent
+                stage = self.stage
+                detail = self.detail
+
+            self.current_percent = self._next_display_percent(self.current_percent, target)
+            self._render_interactive(self.current_percent, stage, detail)
+            self._stop_animation.wait(TV_FRAME_INTERVAL_SECONDS)
+
+    def _next_display_percent(self, current: float, target: float) -> float:
+        if target <= current:
+            return target
+
+        delta = target - current
+        if delta <= TV_MIN_PROGRESS_STEP:
+            return target
+
+        step = max(delta * TV_PROGRESS_EASE, TV_MIN_PROGRESS_STEP)
+        return min(target, current + step)
+
+    def _render_interactive(self, pct: float, stage: str, detail: str = "") -> None:
+        reset = "\033[0m" if self.color else ""
+        bold = "\033[1m" if self.color else ""
+        dim = "\033[2m" if self.color else ""
+        green = "\033[32m" if self.color else ""
+        cyan = "\033[36m" if self.color else ""
         width = 32
         filled = round(width * pct / 100.0)
         bar = f"{green}{'#' * filled}{dim}{'-' * (width - filled)}{reset}"
@@ -99,8 +247,9 @@ class RevealDisplay:
         ]
         if detail:
             lines.append(f"{dim}note{reset}   {detail}")
-        lines.extend(reveal_art(pct).splitlines())
+        lines.extend(reveal_art(pct, frame=self.frame).splitlines())
         block = "\n".join(lines)
+        self.frame += 1
 
         if self.rendered_lines:
             self.stream.write(f"\033[{self.rendered_lines}F\033[J")
@@ -109,8 +258,25 @@ class RevealDisplay:
         self.stream.flush()
         self.rendered_lines = len(lines)
 
+    def close(self, render_final: bool = False) -> None:
+        if not self.interactive:
+            return
+
+        self._stop_animation.set()
+        if self._animation_thread and self._animation_thread.is_alive():
+            self._animation_thread.join(timeout=1.0)
+
+        if render_final:
+            with self._lock:
+                pct = self.target_percent
+                stage = self.stage
+                detail = self.detail
+            self.current_percent = pct
+            self._render_interactive(pct, stage, detail)
+
     def done(self, message: str) -> None:
         if self.interactive:
+            self.close(render_final=True)
             print(message, file=self.stream)
         else:
             print(message, file=self.stream)
@@ -159,6 +325,7 @@ def brew_packages_for(tools: Iterable[str]) -> list[str]:
 
 
 def clean_filename(value: str) -> str:
+    value = value.replace("|", "\uff5c")
     cleaned = re.sub(r"[\x00-\x1f/:]+", "-", value).strip()
     cleaned = re.sub(r"\s+", " ", cleaned)
     return cleaned[:200] or "youtube"
@@ -312,17 +479,19 @@ def newest_media_file(tmpdir: Path) -> Path:
     return max(candidates, key=lambda path: (path.stat().st_mtime, path.stat().st_size))
 
 
-def build_yt_dlp_command(mode: str, url: str, tmpdir: Path) -> list[str]:
+def build_yt_dlp_command(mode: str, url: str, output_dir: Path) -> list[str]:
     selector = "bv*+ba/b" if mode == "video" else "ba/b"
     return [
         "yt-dlp",
         "--no-playlist",
+        "--concurrent-fragments",
+        "8",
         "--newline",
         "--progress",
         "--progress-template",
         "download:%(progress._percent_str)s",
         "--paths",
-        str(tmpdir),
+        str(output_dir),
         "-f",
         selector,
         "-o",
@@ -331,8 +500,32 @@ def build_yt_dlp_command(mode: str, url: str, tmpdir: Path) -> list[str]:
     ]
 
 
-def video_ffmpeg_command(input_path: Path, output_path: Path, profile: str) -> list[str]:
-    return [
+@lru_cache(maxsize=1)
+def ffmpeg_encoders() -> set[str]:
+    result = subprocess.run(
+        ["ffmpeg", "-hide_banner", "-encoders"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return set()
+    return set(re.findall(r"\b([A-Za-z0-9_]+)\s+", result.stdout))
+
+
+def preferred_prores_encoder() -> str:
+    if "prores_videotoolbox" in ffmpeg_encoders():
+        return "prores_videotoolbox"
+    return "prores_ks"
+
+
+def video_ffmpeg_command(
+    input_path: Path,
+    output_path: Path,
+    profile: str,
+    encoder: str = "prores_ks",
+) -> list[str]:
+    command = [
         "ffmpeg",
         "-hide_banner",
         "-y",
@@ -342,25 +535,46 @@ def video_ffmpeg_command(input_path: Path, output_path: Path, profile: str) -> l
         "0:v:0",
         "-map",
         "0:a?",
-        "-c:v",
-        "prores_ks",
-        "-profile:v",
-        str(PRORES_PROFILES[profile]),
-        "-pix_fmt",
-        "yuv422p10le",
-        "-vendor",
-        "apl0",
-        "-c:a",
-        "pcm_s16le",
-        "-ar",
-        "48000",
-        "-movflags",
-        "+faststart",
-        "-progress",
-        "pipe:1",
-        "-nostats",
-        str(output_path),
     ]
+
+    if encoder == "prores_videotoolbox":
+        command.extend(
+            [
+                "-c:v",
+                "prores_videotoolbox",
+                "-profile:v",
+                profile,
+                "-pix_fmt",
+                "p210le",
+            ]
+        )
+    else:
+        command.extend(
+            [
+                "-c:v",
+                "prores_ks",
+                "-profile:v",
+                str(PRORES_PROFILES[profile]),
+                "-pix_fmt",
+                "yuv422p10le",
+                "-vendor",
+                "apl0",
+            ]
+        )
+
+    command.extend(
+        [
+            "-c:a",
+            "pcm_s16le",
+            "-ar",
+            "48000",
+            "-progress",
+            "pipe:1",
+            "-nostats",
+            str(output_path),
+        ]
+    )
+    return command
 
 
 def audio_ffmpeg_command(input_path: Path, output_path: Path) -> list[str]:
@@ -392,7 +606,7 @@ def convert(
     duration = probe_duration(input_path)
     parser = lambda line: parse_ffmpeg_percent(line, duration)
     command = (
-        video_ffmpeg_command(input_path, output_path, profile)
+        video_ffmpeg_command(input_path, output_path, profile, preferred_prores_encoder())
         if mode == "video"
         else audio_ffmpeg_command(input_path, output_path)
     )
@@ -426,6 +640,7 @@ def run_job(
         output_path = output_dir / f"{input_path.stem}{suffix}"
         convert(mode, input_path, output_path, display, profile)
     except Exception:
+        display.close()
         print(f"Temporary files kept at: {tmpdir}", file=sys.stderr)
         raise
     else:
@@ -591,7 +806,13 @@ def main(argv: Iterable[str] | None = None) -> int:
 
     try:
         if args.command == "video":
-            run_job("video", args.url, args.output_dir.expanduser(), args.profile, args.keep_temp)
+            run_job(
+                "video",
+                args.url,
+                args.output_dir.expanduser(),
+                args.profile,
+                args.keep_temp,
+            )
             return 0
         if args.command == "audio":
             run_job("audio", args.url, args.output_dir.expanduser(), "standard", args.keep_temp)
